@@ -35,9 +35,9 @@
         "plugins/aws-agents/skills/agents-pay/requirements.txt",
         "skills/specialized-skills/serverless-skills/processing-s3-uploads-with-step-functions/scripts/requirements.txt"
       ],
-      "last_synced_commit": "f361f552612dbeedc9583ac467fbc697cea7c32a",
-      "last_synced_date": "2026-11-18T06:24:00Z",
-      "commit_message": "fix(aws-startup-advisor): one shared, vendored openai-on-bedrock.md for the migration skills (#672)"
+      "last_synced_commit": "947a491774eed33d2a117bbecea50debc6ac1a20",
+      "last_synced_date": "2026-11-20T23:50:28Z",
+      "commit_message": "feat(aws-startup-advisor): add claude-apps-to-bedrock skill for moving Claude Desktop and Claude Code to Bedrock (#690)"
     },
     "azure": {
       "name": "Microsoft Azure",
@@ -83,9 +83,9 @@
         "skills/agent-platform-tuning/references/requirements.txt",
         "skills/cloud-trace-querying/scripts/requirements.txt"
       ],
-      "last_synced_commit": "739e294750207dcdb90e2a1b74c7517411a974d6",
-      "last_synced_date": "2026-11-17T22:48:47Z",
-      "commit_message": "Add the servicehealth-incident-correlation skill for Personalized Service Health."
+      "last_synced_commit": "4bb21ebfa085f6307d5d62bc21765e1d3433f11d",
+      "last_synced_date": "2026-11-21T01:29:05Z",
+      "commit_message": "No public description"
     }
   }
 }
