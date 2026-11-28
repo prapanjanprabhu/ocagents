@@ -19,6 +19,7 @@ spec:
 
 | Field                          | Purpose              | Default / Note       |
 | ------------------------------ | -------------------- | -------------------- |
+| `description`                  | Usage guidelines.    | Optional string.     |
 | `nodePoolAutoCreation.enabled` | Enable node pool     | `false`              |
 :                                : auto-creation for    :                      :
 :                                : this ComputeClass.   :                      :
@@ -62,6 +63,8 @@ Applied to pools created by the autoscaler.
     contrast, REQUIRE it as label + taint to bind.)**
 -   `serviceAccount`: Identity for nodes (use custom SA with least privilege,
     not default).
+-   `gvnic`: `{ enabled: true }` (`boolean`, default `false`) to enable Google
+    Virtual NIC on auto-created node pools.
 
 ## `priorities[]` Fields
 
@@ -78,14 +81,23 @@ Applied to pools created by the autoscaler.
     at scale-up — *infrastructure* layer; still scales up if a zone is short).
     Balances nodes, **not** pods — for even *pod* distribution add pod
     `topologySpreadConstraints`/`DoNotSchedule` (*workload* layer).
--   `reservations`: `affinity: Specific` or `None`.
+-   `reservations`: `affinity` is one of `Specific`, `AnyBestEffort`,
+    `AnyThenFail` (GKE 1.36.0-gke.3204000+) or `None`.
 -   `flexStart`: `{ enabled: true }` for DWS queued provisioning.
 -   `gpu` / `tpu`: Accelerator requests (count, type, topology).
 -   `nodepools`: (Standard Only) List of manual pool names to target.
--   `nodeSystemConfig`:
+-   `nodeSystemConfig` (also valid under `spec.priorityDefaults`):
     -   `linuxNodeConfig`: `sysctls` (e.g., `net.ipv4.tcp_tw_reuse: true`,
-        `net.core.somaxconn: 4096`). **Never quote integer or boolean values.**
-    -   `kubeletConfig`: `cpuCfsQuota`, `podPidsLimit`, etc.
+        `net.core.somaxconn: 4096`), `transparentHugepageEnabled` (`string`
+        enum: `TRANSPARENT_HUGEPAGE_ENABLED_ALWAYS`,
+        `TRANSPARENT_HUGEPAGE_ENABLED_MADVISE`,
+        `TRANSPARENT_HUGEPAGE_ENABLED_NEVER`, or
+        `TRANSPARENT_HUGEPAGE_ENABLED_UNSPECIFIED`). **Never quote integer or
+        boolean values.**
+    -   `kubeletConfig`: `cpuCfsQuota`, `podPidsLimit`, and (on `spot: true`
+        priorities only, GKE `1.36.0-gke.3204000+`)
+        `shutdownGracePeriodSeconds` (`0`, `30`, or `120` to extend graceful
+        Spot shutdown up to 120s).
 -   `secondaryBootDisks`: Attach secondary boot disks (e.g. pre-warmed container image disks) to auto-provisioned nodes for zero-delay container startup.
 -   `bootDiskProfile`: Performance profile for boot disks (e.g. `BALANCED`).
 -   `ephemeralLocalSsdProfile` / `dedicatedLocalSsdProfile`: Intent-based NVMe scratch space profiles.
@@ -100,9 +112,21 @@ Applied to pools created by the autoscaler.
 
 -   **Case Sensitivity**: `imageType` must be lowercase (e.g.,
     `cos_containerd`).
--   **Field Hallucinations**: NEVER use `spec.description`,
-    `transparentHugepageEnabled`, or `shutdownGracePeriodSeconds`. They do not
-    exist in the CRD.
+-   **Version-Gated Fields**: Check cluster version before emitting newer CRD
+    fields: `spec.description` (GKE 1.33+), `spec.nodePoolConfig.gvnic`
+    (`{enabled: true}`, GKE 1.34.1-gke.3759000+),
+    `nodeSystemConfig.linuxNodeConfig.transparentHugepageEnabled` (GKE
+    1.34.1-gke.3084001+), and
+    `nodeSystemConfig.kubeletConfig.shutdownGracePeriodSeconds` (`0 | 30 | 120`,
+    GKE 1.36.0-gke.3204000+). Do NOT emit them on older clusters.
+-   **Field Nesting**: Place `spec.description` at top-level `spec`,
+    `gvnic.enabled` under `spec.nodePoolConfig`, and
+    `transparentHugepageEnabled` / `shutdownGracePeriodSeconds` (`spot: true`
+    only) under `priorities[].nodeSystemConfig` (or `spec.priorityDefaults`).
+-   **Spot-Only `shutdownGracePeriodSeconds`**: The CRD rejects
+    `shutdownGracePeriodSeconds` on any priority that does not set `spot: true`
+    (*shutdownGracePeriodSeconds is only supported for Spot*), and in
+    `priorityDefaults.nodeSystemConfig` unless every priority is Spot.
 -   **YAML Formatting**: ALWAYS use literal integers for fields like
     `bootDiskSize`, `minCores`, and `somaxconn`. **DO NOT wrap them in quotes.**
     -   **Correct**: `bootDiskSize: 50`

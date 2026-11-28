@@ -50,9 +50,16 @@ Every ABI requires the locked runtime. A failed preflight blocks only the steps 
 
 ## `validate-render-migration-report.py`
 
-- Caller: main window (Generate, before the completion gate); never the dispatched `rw` worker.
+- Caller: main window (Generate stage 7, before the completion gate); never the dispatched `rw` worker. It is the render-only pass, run after the plugin-root structural gate `python3 "$PLUGIN_ROOT/scripts/validate-migration-report.py"` (stdlib-only; structure, readability, accessibility, shared cost anchors). Both are required and both must print `REPORT_OK`; this script owns only the render-specific sections, target rows, accounting, ledger reconciliation, `delta` anchor, `like_for_like_monthly` anchor (exactly one inside `exec-costs`, whole-dollar half-to-even against `scenarios.like_for_like.known_cost_monthly_usd`; `COST_LIKE_FOR_LIKE_MONTHLY_MISSING` / `_MISMATCH` / `_SOURCE_INVALID`), unavailable-baseline literal, exactly-one `aws_monthly_optimized` / `aws_monthly_premium` anchors inside `exec-costs`, projected/scenario cost equality (`projected_costs.aws_monthly_premium` / `aws_monthly_balanced` / `aws_monthly_optimized` against `scenarios.premium` / `balanced` / `optimized`), the Appendix G baseline-resource cross-check (every `resource` address of `terraform/baseline.tf`, read from the report's directory), and exclusions.
 - Arguments: positional `REPORT_ABS`, followed by `--migration-dir ABS_PATH`.
 - Success: stdout is exactly `REPORT_OK`. It creates no output artifact.
 - Retry: deterministic report correction only. Content failure prints one or more `REPORT_FAIL | code=STABLE_CODE` lines and exits 1. Path/argument errors never read the report and use the same fail-closed content status after successful argument parsing.
 
 The two capture commands additionally use error-envelope schema version `1.0` in their attempt manifest. A failure envelope contains only schema version, category, stable code, retryable boolean, attempt ID, timestamp, and bounded numeric counters. Parser, scanner, billing, and normalizer failures are status-only and persist no error body, because their caller already owns phase diagnostics.
+
+## `emit-plan-json.py`
+
+- Invoked by the main window, after the Estimate Done-for-now choice and after Generate `HANDOFF_OK`; never the dispatched worker. Standard library only; the locked-runtime prefix is still used.
+- Arguments: `--migration-dir ABS_PATH --plugin-json ABS_PATH`.
+- Success: `PLAN_OK | path=<dir>/plan.json | platform=RENDER | scope=INFRA_ONLY`, or `PLAN_SKIP | reason=<why>`. Both exit 0, and a skip writes no file. The handoff is fail-open and never gates a phase.
+- Retry: none. Rerunning after an estimate change rewrites `plan.json` atomically.

@@ -16,6 +16,9 @@ _fragments:
   - _id: artifacts-docs
     _trigger: { _when: "run has an infra track (MIGRATION_GUIDE.md/terraform docs apply)" }
     _file: phases/generate/generate-artifacts-docs.md
+  - _id: artifacts-scripts
+    _trigger: { _when: "run has an infra track (aws-design.json exists)" }
+    _file: phases/generate/generate-artifacts-scripts.md
   - _id: artifacts-report
     _trigger: { _always: true }
     _file: phases/generate/generate-artifacts-report.md
@@ -36,6 +39,11 @@ _produces:
   - { file: terraform/.gitignore, _when: "run has an infra track" }
   - { file: terraform/terraform.tfvars.example, _when: "run has an infra track" }
   - { file: MIGRATION_GUIDE.md, _when: "run has an infra track" }
+  - { file: scripts/01-validate-prerequisites.sh, _when: "run has an infra track" }
+  - { file: scripts/02-migrate-data.sh, _when: "run has an infra track and the design has a database" }
+  - { file: scripts/03-migrate-containers.sh, _when: "run has an infra track and the design has an Azure Container Registry" }
+  - { file: scripts/04-migrate-secrets.sh, _when: "run has an infra track and the design has a Key Vault" }
+  - { file: scripts/05-validate-migration.sh, _when: "run has an infra track" }
   - { file: generation-ai.json, _when: "run has an AI track and run_mode is decide_and_execute" }
 _advances_to: complete
 _interactive: false
@@ -50,12 +58,14 @@ _preconditions:
     _on_failure: _halt_and_inform
   - _assert: "preferences.json exists and validates. WHEN the run has an infra track (azure-resource-inventory.json was produced at Discover): aws-design.json, estimation-infra.json, and azure-resource-inventory.json also exist and validate as JSON — an aws-design.json whose services[] is empty because every resource was deferred or skipped is still an infra track and takes the baseline-only path (core files + baseline.tf). WHEN the run is AI-only / app-code-only (no azure-resource-inventory.json — the app-code-only Discover/Clarify-ai-only/Design-ai/Estimate-ai track): those infra artifacts are ABSENT and instead ai-workload-profile.json, aws-design-ai.json, and estimation-ai.json exist and validate. A run with NEITHER an infra design nor an AI design is unrecoverable."
     _on_failure: _unrecoverable
-  - _assert: "run_mode in .phase-status.json is 'decide_and_execute' — the user chose Execute at the post-Estimate decision gate, accepted the decide-complete resume offer, or explicitly asked for Terraform/migration scripts this turn. An absent run_mode is NOT consent."
+  - _assert: "WHEN the run has an infra track: estimation-infra.json projected_costs._premium_basis and projected_costs._optimized_basis are both present. If either is absent the file predates the current Premium / Optimized definitions: tell the user its Premium and Optimized figures were produced under the earlier tier definitions and offer to re-run Estimate first (a user-confirmed re-run, never a silent repair; set phases.estimate and phases.generate back to pending only if they accept). If they decline, continue, and the report's reading guide states the earlier-definitions notice (report-decision-core.md, How to read cost tiers) instead of the new derivations."
+    _on_failure: _halt_and_inform
+  - _assert: "run_mode in .phase-status.json is 'decide_and_execute' — the user chose Execute at the post-Estimate decision gate, accepted the decide-complete resume offer, or explicitly asked this turn to generate the migration artifacts (the Terraform, migration scripts and migration guide on an infra track, or the AI-track artifacts named at the gate on an AI-only run). An absent run_mode is NOT consent."
     _on_failure: _halt_and_inform
   - _assert: "preferences.json metadata.deferred_to_generate is absent or an empty array, and no preferences.json row carries deferred_to_generate: true — every execution-only row Clarify defaulted (data.db_cutover) was confirmed at the Decision gate's Step 3b (estimate-assemble.md), which sets the row flag to false and removes the key from both metadata lists. A non-empty array or a row still flagged true means a runbook is about to be written against an answer the user never gave; return to Step 3b."
     _on_failure: _halt_and_inform
 _postconditions:
-  - _assert: "the always-produced artifacts exist and (where JSON) validate: migration-report.html, generation-warnings.json, validation-report.json, README.md. WHEN the run has an infra track: terraform/main.tf, terraform/baseline.tf, terraform/variables.tf, terraform/outputs.tf, terraform/.gitignore, terraform/terraform.tfvars.example, and MIGRATION_GUIDE.md also exist. baseline.tf is required even when aws-design.json has no infrastructure clusters. WHEN the run is AI-only (no aws-design.json / estimation-infra.json): there is no terraform/ directory and no MIGRATION_GUIDE.md; instead generation-ai.json exists and validates and an ai-migration/ directory was produced. migration-report.html is required on BOTH paths — a completed Generate with no report is a gate failure."
+  - _assert: "the always-produced artifacts exist and (where JSON) validate: migration-report.html, generation-warnings.json, validation-report.json, README.md. WHEN the run has an infra track: terraform/main.tf, terraform/baseline.tf, terraform/variables.tf, terraform/outputs.tf, terraform/.gitignore, terraform/terraform.tfvars.example, MIGRATION_GUIDE.md, scripts/01-validate-prerequisites.sh and scripts/05-validate-migration.sh also exist, plus scripts/02-migrate-data.sh when the design has a database, scripts/03-migrate-containers.sh when it has an Azure Container Registry, and scripts/04-migrate-secrets.sh when it has a Key Vault. No script was executed during Generate. baseline.tf is required even when aws-design.json has no infrastructure clusters. WHEN the run is AI-only (no aws-design.json / estimation-infra.json): there is no terraform/ directory and no MIGRATION_GUIDE.md; instead generation-ai.json exists and validates and an ai-migration/ directory was produced. migration-report.html is required on BOTH paths — a completed Generate with no report is a gate failure."
     _on_failure: _halt_and_inform
   - _validate_json: [generation-warnings.json, validation-report.json]
     _on_failure: _halt_and_inform
@@ -87,7 +97,7 @@ _forbids_files:
 
 ## Orientation
 
-Emit the Terraform, the scripts, the docs, and the report. This phase runs under
+Emit the Terraform, the scripts, the docs, and the report. Scripts are written, never run. The AI track's `generate-artifacts-ai.md` also writes its Bedrock migration scripts. This phase runs under
 `_exec: { _agent: rw }` with `_interactive: false` — the work is bulky, file-only,
 and self-contained, so it runs in an isolated sub-agent while the gates, the state
 transition, and the `HANDOFF_OK` stay in the main window.
@@ -97,7 +107,18 @@ transition, and the `HANDOFF_OK` stay in the main window.
 worker emits `terraform/` only; it cannot invoke skills or run `terraform`/`python`.
 This mirrors gcp-to-aws's `generate.md`, which owns validation inline in its own main
 window and passes only the terraform DIR to the skill (the caller owns the report). See
-§ "Step: Run the phase" step 4.
+§ "Step: Run the phase" step 5.
+
+**Artifact pre-check gate (main window, before dispatch):** the report is rendered from the
+phase artifacts, so `generate-artifacts-report.md` Step 0 requires them to pass the plugin's
+artifact validator (`scripts/validate-artifacts.py --run-dir "$MIGRATION_DIR" --skill
+azure-to-aws`) **before** any report HTML is written. The `rw` worker cannot run `python3`,
+so this phase runs the check itself in the MAIN window as step 2 of § "Step: Run the phase",
+and dispatches the worker only when it passes. On `FAIL`: surface the `ERROR` lines to the
+user, emit `GATE_FAIL | phase=generate | fragment=artifacts-report | reason=artifact_contract`,
+do **NOT** patch artifacts to pass validation, and do **NOT** dispatch — so
+`migration-report.html` is never written, and the phase stops with `GATE_FAIL` rather than
+silently skipping a required `_produces` artifact.
 
 ## Generate is opt-in, and the check has no mechanical teeth
 
@@ -127,7 +148,7 @@ replaced topological depth: Generate's sequencing is what the ordering is _for_.
 
 The three artifact fragments and the assembler are wired AND their emitters are
 implemented: `generate-artifacts-infra.md` emits Terraform, `generate-artifacts-docs.md`
-the docs, `generate-artifacts-report.md` the stakeholder report (rendered from
+the docs, `generate-artifacts-scripts.md` the dry-run-by-default migration scripts, `generate-artifacts-report.md` the stakeholder report (rendered from
 `references/shared/report-decision-core.md`, full mode, validated by
 `scripts/validate-migration-report.py`), and `generate-artifacts-ai.md` the AI-migration
 pack when an AI design exists. The phase runs infra, AI-only (app-code-only), or both —
@@ -136,15 +157,22 @@ fragment's own `## Status`, not this line, for its emitter detail.
 
 ## Step: Run the phase
 
-Steps 2–3 are the phase's WORK and are dispatched to the file-only `rw` worker. Step 4
-and step 5 run in the MAIN window — the worker cannot invoke skills or run
+Steps 3–4 are the phase's WORK and are dispatched to the file-only `rw` worker. Steps 1–2
+and steps 5–6 run in the MAIN window — the worker cannot invoke skills or run
 `terraform`/`python`.
 
 1. Verify the entry gate, including `run_mode`.
-2. Run each fragment whose `_trigger` holds. (worker)
-3. Run `generate-assemble.md`. (worker — emits `terraform/`, the docs, the report, and
+2. **Artifact pre-check — MAIN WINDOW, before dispatch.** Run
+   `python3 "$PLUGIN_ROOT/scripts/validate-artifacts.py" --run-dir "$MIGRATION_DIR" --skill azure-to-aws`
+   (read-only; it rewrites nothing). Exit `0`: continue. Exit `1`: surface every `ERROR`
+   line, emit `GATE_FAIL | phase=generate | fragment=artifacts-report | reason=artifact_contract`,
+   name the phase that owns the failing artifact, do **NOT** patch artifacts, and stop here —
+   nothing is dispatched and no report is written. Any other exit code: the validator did not
+   run; tell the user the pre-check was skipped, never record it as a pass, and continue.
+3. Run each fragment whose `_trigger` holds. (worker)
+4. Run `generate-assemble.md`. (worker — emits `terraform/`, the docs, the report, and
    `generation-warnings.json`; it does NOT validate or write `validation-report.json`.)
-4. **Validate the generated Terraform and write the validation report — MAIN WINDOW,
+5. **Validate the generated Terraform and write the validation report — MAIN WINDOW,
    after the worker returns and before `_postconditions`.** This MUST run in the main
    window because the `rw` worker cannot invoke skills or run `terraform`/`python`. This
    phase is the **caller** of the `tf-best-practices` validation protocol, exactly as
@@ -165,7 +193,7 @@ and step 5 run in the MAIN window — the worker cannot invoke skills or run
      pin the skill's raw verdict path as the report.
    - An unresolved `POLICY_FAIL` the user does not `skip`/`abort` sets `status: policy_failed`
      and blocks completion (the `_postconditions` `_assert`).
-5. Evaluate `_postconditions`. On all-pass emit `HANDOFF_OK` and advance to
+6. Evaluate `_postconditions`. On all-pass emit `HANDOFF_OK` and advance to
    `complete`; on any failure emit `GATE_FAIL` and stop.
 
 **Write the web-handoff summary (fail-open), only after `HANDOFF_OK`:** run

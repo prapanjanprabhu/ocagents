@@ -2,12 +2,13 @@
 
 > **Why this file exists.** `aws-design-ai.json` had a prose-only contract that drifted between
 > GCP and Azure until #416 canonicalized it (`schema-design-aws-ai.md`). `estimation-ai.json` is
-> the same risk one phase over: `estimate-ai.md` produces it (both GCP's
-> `skills/gcp-to-aws/references/phases/estimate/estimate-ai.md` and Azure's
-> `skills/azure-to-aws/references/phases/estimate/estimate-ai.md`), and `generate-ai.md` /
-> `generate-artifacts-ai.md` consume it, with each skill's own "Schema — top-level fields"
-> table carrying the same field set under GCP-/Azure-named keys (`gcp_monthly_ai_spend` vs
-> `azure_monthly_ai_spend`, `current_gcp_monthly` vs `current_azure_monthly`). This file is the
+> the same risk one phase over: `estimate-ai.md` produces it (bedrock-migration-assessment's
+> `skills/bedrock-migration-assessment/references/phases/estimate/estimate-ai.md`, which gcp-to-aws runs in
+> combined mode, and Azure's `skills/azure-to-aws/references/phases/estimate/estimate-ai.md`), and `generate-ai.md` /
+> `generate-artifacts-ai.md` consume it. Azure's own "Schema — top-level fields" table carries
+> the same field set under Azure-named keys (`azure_monthly_ai_spend`, `current_azure_monthly`),
+> as GCP's did before gcp-to-aws moved its AI track to bedrock-migration-assessment, which writes
+> the neutral fields. This file is the
 > single, provider-neutral written contract, using neutral field names
 > (`current_costs.monthly_ai_spend`, `cost_comparison.current_source_monthly`) so one JSON
 > Schema (`scripts/contracts/estimation-ai.schema.json`) serves both skills without a GCP/Azure
@@ -18,13 +19,11 @@
 > **This is a target-only contract, like `ai-migration-scenario.schema.json` (#410),
 > `ai-workload-profile.schema.json` (#415), and `aws-design-ai.schema.json` (#416).** Structural
 > validity against this document or its companion JSON Schema does NOT imply an implemented
-> pricing lookup, model mapping, or runtime-supported identity, and does NOT imply that either
-> skill's current `estimate-ai.md` actually emits this shape yet — NEITHER skill's `estimate-ai.md`
-> currently emits the neutral field names (`current_costs.monthly_ai_spend`,
-> `cost_comparison.current_source_monthly`, `cost_by_source[]`); current GCP/Azure output still
-> uses the GCP-/Azure-named fields documented in each skill's own `estimate-ai.md`, unchanged by
-> this document. No producer has been repointed to this canonical contract in this change — that
-> is deferred runtime-adoption work.
+> pricing lookup, model mapping, or runtime-supported identity. One skill produces it today:
+> `bedrock-migration-assessment`, whose Estimate phase checks it before completing; gcp-to-aws
+> runs that phase and copies the result. Azure's `estimate-ai.md` does not emit the neutral field
+> names (`current_costs.monthly_ai_spend`, `cost_comparison.current_source_monthly`,
+> `cost_by_source[]`) yet and still uses the Azure-named fields in its own table; see Status.
 
 ## Shape
 
@@ -61,9 +60,26 @@
   "optimized_projection": {},
   "recommendation": {}, // see § recommendation
   "cost_by_source": [], // many-valued — see § cost_by_source[]
+  "export_inputs": { // optional; omit when pre-pricing evidence is unavailable
+    "snapshot": {"version": 1, "runId": "<uuid>", "owningSkill": "<skill>", "files": {}},
+    "rows": {
+      "/cost_comparison/projected_bedrock_monthly": {
+        "monthlyCost": 1320.0,
+        "estimateInput": {"configurationSummary": "<retained aggregate usage and configuration>"}
+      }
+    }
+  },
   "services_not_estimated": [] // ALWAYS present, [] when every workload is token-priced
 }
 ```
+
+## export_inputs
+
+Optional retained evidence follows the producer skill's retained cost-input contract.
+For the AI route, use `/cost_comparison/projected_bedrock_monthly` and retain the
+complete selected aggregate, including every contributing model and usage source.
+The field is absent when pre-pricing capture or complete evidence is unavailable;
+it does not change the estimate result or completion gate.
 
 ## cost_by_source[]
 
@@ -156,18 +172,22 @@ priced, not token priced, and are listed here instead of silently omitted.
 - [ ] `migration_cost_considerations.categories` is `[]`.
 - [ ] Unknown source or target costs and their dependent deltas are `null`; known zero-dollar
       costs remain numeric `0`.
+- [ ] When `export_inputs` is present, it follows the retained-input contract and its AI row key
+      is `/cost_comparison/projected_bedrock_monthly`.
 - [ ] `services_not_estimated[]` is present (`[]` when clean).
 
-## Status — target-only, no producer yet
+## Status — one producer, Azure deferred
 
-This canonical contract has no producer in this change. Both GCP's
-`skills/gcp-to-aws/references/phases/estimate/estimate-ai.md` and Azure's
-`skills/azure-to-aws/references/phases/estimate/estimate-ai.md` still write against their own
-"Schema — top-level fields" table with GCP-/Azure-named fields (`current_costs.gcp_monthly_ai_spend`
-/ `current_costs.azure_monthly_ai_spend`, `cost_comparison.current_gcp_monthly` /
-`cost_comparison.current_azure_monthly`), and neither emits `cost_by_source[]`. This document
-(and its companion JSON Schema, `scripts/contracts/estimation-ai.schema.json`) is the TARGET
-contract. Repointing either skill's `estimate-ai.md` to emit this shape is deferred
-runtime-adoption work, named explicitly so a future PR does not silently assume today's runtime
-output already satisfies this contract. `generate-ai.md` and `generate-artifacts-ai.md` are
-unchanged and still read today's artifact shape.
+`bedrock-migration-assessment` produces this contract: its Estimate phase
+(`skills/bedrock-migration-assessment/references/phases/estimate/estimate-ai.md`) writes
+`estimation-ai.json`, and `skills/bedrock-migration-assessment/scripts/estimate-ai.py check`
+validates it against the companion JSON Schema (`scripts/contracts/estimation-ai.schema.json`)
+before the phase completes. gcp-to-aws runs that phase in combined mode and copies the file
+(`skills/gcp-to-aws/references/shared/ai-handoff.md`).
+
+Azure's `skills/azure-to-aws/references/phases/estimate/estimate-ai.md` still writes against its
+own "Schema — top-level fields" table with Azure-named fields (`current_costs.azure_monthly_ai_spend`,
+`cost_comparison.current_azure_monthly`) and does not emit `cost_by_source[]`. It may additionally
+emit optional `export_inputs` under the retention contract above; that additive field does not
+claim adoption of the neutral target shape. For `azure-to-aws` this document is the TARGET
+contract; repointing it is deferred runtime-adoption work.

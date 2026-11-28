@@ -58,18 +58,26 @@ This is deliberately the OPPOSITE sign of
 Heroku) — same fact, savings-vs-difference framing. When presenting either,
 always label the direction in words; never print a bare signed value.
 
-Also attach optional workshop metadata when present (does not affect Property-16):
+Also attach optional workshop metadata when present (does not affect Property-16).
+For Apply & reprice, the caller supplies `estimate_scenario_id` allocated before
+pricing; use that destination even while preferences still select the prior
+scenario. Ordinary Estimate calls without this invocation value keep the existing
+active-ID behavior. Do not derive a new ID in the assembler.
 
 ```json
 {
   "workshop": {
-    "scenario_id": "<preferences.workshop.active_scenario_id or null>",
+    "scenario_id": "<estimate_scenario_id when supplied; otherwise preferences.workshop.active_scenario_id or null>",
     "region_note": "<from cost-engine, or null>"
   }
 }
 ```
 
 Write to `$MIGRATION_DIR/estimation-infra.json`.
+
+Preserve the cost-engine's optional `export_inputs` object unchanged, following
+`references/vendored/estimate/cost-export-inputs.md`. Do not reconstruct missing
+row evidence or recapture a pre-pricing snapshot in the assembler.
 
 ---
 
@@ -102,9 +110,9 @@ After writing `estimation-infra.json`, present a concise summary to the user:
 1. **Pricing source and accuracy** — State cache age and accuracy range
 2. **Heroku baseline vs AWS projected** (balanced tier) — one-line comparison (if a baseline was determined, labeled with its source; include the derived-baseline caveat when the source is not billing data)
 3. **Three-tier table**: Premium, Balanced, Optimized with monthly totals
-   - Premium: _Highest resilience / highest monthly estimate_
-   - Balanced: _Default scenario; compare Heroku to this first_
-   - Optimized: _Lower estimate; reservations / Spot trade-offs assumed_
+   - Premium: _Balanced plus the Multi-AZ / HA uplift_
+   - Balanced: _Right-sized design at on-demand rates; compare Heroku to this row first_
+   - Optimized: _Balanced with a commitment discount on RI/SP-eligible lines_
    - One-line note: Three figures are pricing scenarios for the same architecture (not three Terraform stacks). Generated Terraform aligns with Balanced.
 4. **Per-service cost breakdown** (balanced tier, 1 line per service)
 5. **Migration complexity**: tier + timeline range
@@ -186,8 +194,9 @@ Phase 4 of 6 complete (Estimate). Remaining: Generate (+ optional Feedback).
 - Verdict: [outcome_label when recommendation.outcome exists; else path_label]
 - AWS estimate (Balanced): $[X]/mo · Your Heroku baseline: [figure, or "not
   established" when current_costs.source is unavailable]
-- Timeline if you execute: ~[N–M] weeks ([complexity_tier], from
-  references/vendored/estimate/complexity-tiers.json)
+- Timeline if you execute: [path_label] — [complexity_tier] complexity; stages and
+  duration drivers are in the decision report (no week figure: durations are
+  uncalibrated, and the report validator rejects a bare week range)
 
 #### Assumptions behind this number
 
@@ -222,7 +231,13 @@ Assumption Sheet lives when Clarify ran in fast-path mode — the user judges a
 default against the dollars it moves, not before they have a number — and on the
 full flow it shows the rows waved through with "use defaults for the rest".
 Extracted (Detected) values are not listed here; they were read from Heroku, not
-assumed.
+assumed. **Q17 (AWS Activate credits) is never a row here either**, even when it
+is in `metadata.questions_defaulted`: nothing in Design or Estimate reads
+`global.startup_program_status`, so it moves no dollars. When `sources.Q17` is
+`"default"`, add one line directly under the block instead — "You skipped the AWS
+Activate credits question; answer it any time (1 already have credits · 2
+self-funded, not applied · 3 VC/accelerator-backed, not applied) and the report's
+credits callout names your tier." — and handle the answer per the Q17 bullet below.
 
 **Handling a correction from this block:**
 
@@ -251,6 +266,17 @@ assumed.
   above as an assumption, and the saved active scenario carries the same
   provenance as the working tree. Scenarios the user did not change keep
   their own saved provenance.
+- If the answer is to **Q17 (AWS Activate credits)** — from the one-line prompt
+  under the block, or volunteered: interpret it through the Q17 catalog entry
+  (`clarify-interview.md` § Q17) and write `global.startup_program_status`, set
+  `sources.Q17` to `"user"`, move `Q17` from `metadata.questions_defaulted` to
+  `metadata.questions_asked`, set `metadata.timestamp`, and re-run the
+  `clarify-assemble.md` § Validation Checklist on the updated file (steps 1–3 of
+  the contract below). **Skip steps 4–5**: no reprice, no scenario rebase — Design
+  and Estimate do not read the field, and every saved scenario's
+  `scenario-NNN.preferences.json` keeps its own copy unchanged. Re-present the
+  gate (or the decision report, if the user asks for it) so the credits callout
+  reflects the new status.
 - Otherwise, the correction is a late answer to a Clarify question and runs
   the **same question contract** the interview would have run — a field-only
   write is not enough:
@@ -363,13 +389,28 @@ restricted to the Terraform policy checker.
      `references/shared/report-decision-core.md` and render it in **decision**
      mode — write `$MIGRATION_DIR/decision-report.html` and
      `$MIGRATION_DIR/DECISION.md` per that file's decision-mode rules (no
-     appendices, no Terraform, CTA footer). Validate with
-     `python3 "<SKILL_BASE>/scripts/validate-heroku-migration-report.py" "$MIGRATION_DIR/decision-report.html" --mode decision --migration-dir "$MIGRATION_DIR"`
-     (absolute paths — cwd must not be load-bearing; `--migration-dir` is required
-     so the decision-mode pre-execution check — `.phase-status.json`'s
-     `phases.generate` must be `"pending"` or absent for THIS cycle, not raw
-     `terraform/` / `generation-*.json` absence; see `report-decision-core.md` —
-     actually runs) and fix failures before presenting.
+     appendices, no Terraform, CTA footer). Validate with both commands:
+
+     ```bash
+     python3 "$PLUGIN_ROOT/scripts/validate-migration-report.py" \
+       "$MIGRATION_DIR/decision-report.html" \
+       --profile heroku \
+       --mode decision \
+       --estimation-infra "$MIGRATION_DIR/estimation-infra.json" \
+       --migration-dir "$MIGRATION_DIR"
+     python3 "<SKILL_BASE>/scripts/validate-heroku-migration-report.py" \
+       "$MIGRATION_DIR/decision-report.html" \
+       --mode decision \
+       --migration-dir "$MIGRATION_DIR"
+     ```
+
+     Both must print `REPORT_OK` and exit 0; either `REPORT_FAIL` blocks, and a
+     validator that does not run is not a pass (no skip path). Absolute paths — cwd
+     must not be load-bearing; `--migration-dir` is required so the add-on's
+     decision-mode pre-execution check — `.phase-status.json`'s `phases.generate`
+     must be `"pending"` or absent for THIS cycle, not raw `terraform/` /
+     `generation-*.json` absence; see `report-decision-core.md` — actually runs.
+     Fix failures before presenting.
   2. Set `run_mode: "decide"` and `current_phase: "complete"` in
      `.phase-status.json` (`phases.generate` **stays** `"pending"` — this
      combination means "decision complete, execution available on request";

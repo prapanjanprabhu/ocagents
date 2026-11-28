@@ -6,11 +6,20 @@ description: "Migrate workloads from Heroku to AWS. Triggers on: migrate from He
 # Heroku-to-AWS Migration Skill
 
 The skill base directory is given in the "Base directory for this skill: X" line the
-harness emits at load time. Call it `<SKILL_BASE>`. The report validator lives at
-`<SKILL_BASE>/scripts/validate-heroku-migration-report.py` — resolve it relative to
-`<SKILL_BASE>`, never assume a plugin-root `scripts/` directory, since a standalone
-`npx skills add --skill heroku-to-aws` install carries only this skill's own
-directory tree, not the plugin's top-level `scripts/`.
+harness emits at load time. Call it `<SKILL_BASE>`. The plugin install root — two
+directories above `<SKILL_BASE>` — is `$PLUGIN_ROOT`.
+
+Report validation is a **two-command gate**. The shared validator
+`$PLUGIN_ROOT/scripts/validate-migration-report.py --profile heroku` carries the
+structure and content standard every migration report in this plugin meets; the
+heroku add-on `<SKILL_BASE>/scripts/validate-heroku-migration-report.py` carries the
+heroku-only rules. Both must print `REPORT_OK` and exit 0; either `REPORT_FAIL`
+blocks, and a validator that does not run is not a pass. A skill-only install
+(`npx skills add --skill heroku-to-aws`) carries this skill's tree but not the
+plugin's top-level `scripts/`; without `$PLUGIN_ROOT/scripts/validate-migration-report.py`
+Generate and the Decision gate cannot complete — fail closed, exactly as for a
+missing `python3`. The gamma package maps the shared validator into
+`<SKILL_BASE>/scripts/` so that build is self-contained.
 
 ## Optional usage telemetry
 
@@ -22,7 +31,7 @@ requires it; unavailable or declined telemetry never blocks this skill.
 ## Philosophy
 
 - **Full platform exit by default**: Heroku is in sustaining engineering (KTLO) — stability and support only, no new investment. Enterprise contracts are no longer sold to new customers. This skill assumes complete departure from Heroku (compute, data, and add-ons) within a user-defined window. Do not recommend indefinite continued use of Heroku.
-- **PaaS-to-PaaS by default, recommendation-shaped**: Elastic Beanstalk (Docker platform, AL2023) is the default compute target because it preserves Heroku's managed platform model (source deployment, platform-managed environments, and lower operational burden than direct container orchestration). Clarify presents a per-formation compute recommendation before asking for confirmation. Fargate remains the override for direct container control and is used automatically for horizontally scaled non-web processes that EB SingleInstance cannot preserve; EKS remains the override for teams with Kubernetes expertise. On the Fargate override path, `web` formations default to ECS Express Mode (`aws_config.ecs_mode: "express"`, see `design-mapping.md` 2A) unless Design records an eliminator; this is a shape of the Fargate override, not a replacement for the EB default. Do not recommend AWS App Runner (no longer accepting new customers as of April 2026).
+- **PaaS-to-PaaS by default, recommendation-shaped**: Elastic Beanstalk (Docker platform, AL2023) is the default compute target because it preserves Heroku's managed platform model (source deployment, platform-managed environments, and lower operational burden than direct container orchestration). Clarify explains the targets in Heroku terms (what you deploy, what you operate, how you are billed), then presents a per-formation compute recommendation before asking for confirmation. Fargate remains the override for direct container control and is used automatically for horizontally scaled non-web processes that EB SingleInstance cannot preserve; it also becomes the recommendation when every app already runs Heroku's `container` stack (the team already builds and owns its images) or the estate exceeds 40 process types. EKS remains the override for teams with Kubernetes expertise. On the Fargate override path, `web` formations default to ECS Express Mode (`aws_config.ecs_mode: "express"`, see `design-mapping.md` 2A) unless Design records an eliminator; this is a shape of the Fargate override, not a replacement for the EB default. Do not recommend AWS App Runner (no longer accepting new customers as of April 2026).
 - **Interim cutover is bounded**: If a user chooses data-first migration (database on AWS, app temporarily on Heroku), treat this as a bounded phase (weeks, not quarters). Require a target exit date and surface KTLO platform risk warnings.
 - **Re-platform by default**: Select AWS services that match Heroku workload types (e.g., Dynos → Elastic Beanstalk, Heroku Postgres → RDS/Aurora, Heroku Redis → ElastiCache, Kafka → MSK).
 - **Dev sizing unless specified**: Default to development-tier capacity (e.g., db.t4g.micro, single AZ). Upgrade only on user direction.
@@ -73,6 +82,22 @@ When adding new reference files, verify the phase's total loaded instructions re
 
 ---
 
+## AI handoff
+
+Heroku Discover does not design a Bedrock target. When the workspace has application source and the sibling skill `<SKILL_BASE>/../bedrock-migration-assessment/` is installed, Discover follows its application-code scan and, if that scan finds an AI provider, writes `$MIGRATION_DIR/ai-workload-profile.json` plus `ai-track.json` with status `deferred_shared_ai_engine`. When that skill is not installed, Discover skips the AI scan, tells the user so once, and the migration continues without an AI handoff. This skill does not vendor `openai-on-bedrock.md` and does not read it.
+
+Before loading Clarify, every time you are about to (the turn that emits `HANDOFF_OK | phase=discover` and every later resume at Clarify), do this in order:
+
+1. If `$MIGRATION_DIR/ai-workload-profile.json` does not exist, or `<SKILL_BASE>/../bedrock-migration-assessment/SKILL.md` does not exist, delete `$MIGRATION_DIR/ai-handoff.json` if it is there and load Clarify.
+2. Read `$MIGRATION_DIR/ai-handoff.json` if it exists. Compare its `profile_digest` with the SHA-256 of the profile file's bytes (`sha256:<hex>`):
+   - Same digest and `status` is `assessment_completed` or `skipped`: load Clarify.
+   - Same digest and `status` is `in_progress`: the assessment did not finish. Ask the user to resume it or skip it for now. To resume, load `<SKILL_BASE>/../bedrock-migration-assessment/SKILL.md` and give it `.migration/<assessment_dir>` as the run to resume (its Step 0 resumes it). To skip, set `status` to `skipped`.
+   - No file, or a different digest: go to step 3.
+3. Pause infrastructure. Load `<SKILL_BASE>/../bedrock-migration-assessment/SKILL.md` and run it on the profile route with the absolute path of `$MIGRATION_DIR/ai-workload-profile.json`. It copies the profile into its own `.migration/bma-[MMDD-HHMM]/` directory, then runs Clarify, Design and Estimate and stops. When it asks whether to generate the migration artifacts, answer no: this handoff ends at the Estimate summary. As soon as that directory exists, write `$MIGRATION_DIR/ai-handoff.json`: `{"profile_digest": "sha256:<hex>", "assessment_dir": "bma-[MMDD-HHMM]", "status": "in_progress"}`. Leave `status` as `in_progress` through Clarify, Design and Estimate: Design alone does not finish the assessment. When its Estimate summary has been shown, set `status` to `assessment_completed`. A session interrupted during Estimate resumes through the `in_progress` branch above.
+4. Return here and load Clarify with this skill's own `$MIGRATION_DIR`, never the `bma-` directory. A `bma-` directory under `.migration/` is not an infrastructure run: the single-run check does not count it and Resume latest never selects it (`INTERPRETER.md` § State discipline).
+
+Do not copy `aws-design-ai.json` into this skill's design, estimate, or Terraform, and do not invent a model, a price, an adapter, or AI Terraform here.
+
 ## Execution
 
 This skill is driven by the interpreter loop in `INTERPRETER.md` (§ The interpreter
@@ -111,9 +136,10 @@ uvx --version 2>/dev/null || echo "UVX_MISSING"
   **Do not hard-stop** an infrastructure migration for missing `uv`.
 - If both are present: proceed without nagging.
 - Soft-warn once if `python3` is missing (Heroku report validation at Generate
-  uses `<SKILL_BASE>/scripts/validate-heroku-migration-report.py`). Earlier phases
+  runs `$PLUGIN_ROOT/scripts/validate-migration-report.py --profile heroku` and
+  `<SKILL_BASE>/scripts/validate-heroku-migration-report.py`). Earlier phases
   (Discover → Estimate) may continue after the warning, but **Generate does not
-  complete until the report validator runs successfully** — install `python3`
+  complete until both report validators run successfully** — install `python3`
   before Generate. This matches `generate.md`'s Finish-Generate step and its
   `report-validation-status.json` postcondition: absent or `not_run` validation is a
   blocking `GATE_FAIL`, not a pass. Never report an unvalidated report as passing.

@@ -168,8 +168,7 @@ def _opus55_pricing(region: str, model_id: str) -> dict:
 # different models with independently published rates.
 _SNAPSHOT_SUFFIX = re.compile(r"(-\d{8})?(-v\d+(:\d+)?)?")
 
-# The literal the Estimate phases already consume for an unresolved context tier
-# (gcp-to-aws and azure-to-aws references/phases/estimate/estimate-ai.md).
+# The literal the AI Estimate phases consume for an unresolved context tier (azure-to-aws and bedrock-migration-assessment estimate-ai.md).
 _APPROXIMATE_TIER = "approximate — request-size distribution unknown"
 
 
@@ -271,7 +270,7 @@ def display_name_guess(model_id: str) -> str:
 
 def lookup(region: str, model_id: str) -> dict:
     profile_arn = re.fullmatch(
-        r"arn:aws:bedrock:[^:]+:[0-9]{12}:inference-profile/([^/]+)", model_id
+        r"arn:aws(?:-us-gov|-cn)?:bedrock:[^:]+:[0-9]{12}:inference-profile/([^/]+)", model_id
     )
     if profile_arn:
         model_id = profile_arn.group(1)
